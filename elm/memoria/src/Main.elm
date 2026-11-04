@@ -1,14 +1,16 @@
 module Main exposing (main)
 
-{-| Ponto de entrada: liga as regras de `Game` à tela, seguindo a Arquitetura
-Elm (modelo, mensagens, `update` e `view`).
+{-| Ponto de entrada: liga as regras de `Game` à tela e à API, seguindo a
+Arquitetura Elm (modelo, mensagens, `update` e `view`).
 -}
 
+import Api exposing (CardInfo, Theme)
 import Browser
 import Game exposing (Card, Face(..), Game, Turn(..))
 import Html exposing (..)
 import Html.Attributes exposing (..)
-import Html.Events exposing (onClick)
+import Html.Events exposing (onCheck, onClick, onInput)
+import Http
 import Process
 import Rng exposing (Seed)
 import Task
@@ -35,23 +37,46 @@ main =
 
 
 type alias Model =
-    { game : Game
-    , seed : Seed
+    { seed : Seed
+    , state : State
+    , themes : List Theme
+    , selectedTheme : String
+    , equalPairs : Bool
+    , moves : Int
     }
+
+
+type State
+    = Loading
+    | Failed Http.Error
+    | Playing Game
 
 
 init : Flags -> ( Model, Cmd Msg )
 init flags =
-    ( newModel (Rng.seed flags), Cmd.none )
-
-
-newModel : Seed -> Model
-newModel seed =
     let
-        ( game, nextSeed ) =
-            Game.new seed
+        defaultTheme =
+            "animals"
+
+        defaultEqualPairs =
+            False
     in
-    { game = game, seed = nextSeed }
+    ( { seed = Rng.seed flags
+      , state = Loading
+      , themes =
+            [ { id = "animals", name = "Animais" }
+            , { id = "simpsons", name = "Os Simpsons" }
+            , { id = "pokemon", name = "Pokémon" }
+            ]
+      , selectedTheme = defaultTheme
+      , equalPairs = defaultEqualPairs
+      , moves = 0
+      }
+    , Cmd.batch
+        [ Api.getThemes GotThemes
+        , Api.getCards defaultTheme defaultEqualPairs GotCards
+        ]
+    )
 
 
 
@@ -60,11 +85,15 @@ newModel seed =
 
 type Msg
     = CardClicked Int
-    | MismatchTimeout
+    | MismatchTimeout Turn
     | NewGameClicked
+    | GotCards (Result Http.Error (List CardInfo))
+    | GotThemes (Result Http.Error (List Theme))
+    | ThemeSelected String
+    | EqualPairsToggled Bool
 
 
-{-| Tempo, em milissegundos, que as duas cartas erradas ficam à mostra.
+{-| Tempo, em milissegundos, que as duas cartas erradas ficam à mostra antes de desvirar.
 -}
 mismatchDelay : Float
 mismatchDelay =
@@ -74,36 +103,142 @@ mismatchDelay =
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
+        GotCards (Ok infos) ->
+            let
+                ( game, nextSeed ) =
+                    Game.new model.seed infos
+            in
+            ( { model | seed = nextSeed, state = Playing game }, Cmd.none )
+
+        GotCards (Err err) ->
+            ( { model | state = Failed err }, Cmd.none )
+
+        GotThemes (Ok themes) ->
+            ( { model | themes = themes }, Cmd.none )
+
+        GotThemes (Err _) ->
+            ( model, Cmd.none )
+
+        ThemeSelected themeId ->
+            ( { model | selectedTheme = themeId, state = Loading, moves = 0 }
+            , Api.getCards themeId model.equalPairs GotCards
+            )
+
+        EqualPairsToggled isChecked ->
+            ( { model | equalPairs = isChecked, state = Loading, moves = 0 }
+            , Api.getCards model.selectedTheme isChecked GotCards
+            )
+
         CardClicked id ->
-            ( { model | game = Game.reveal id model.game }, Cmd.none )
+            case model.state of
+                Playing game ->
+                    let
+                        newGame =
+                            Game.reveal id game
+
+                        cmd =
+                            case newGame.turn of
+                                TwoRevealed _ _ ->
+                                    Process.sleep mismatchDelay
+                                        |> Task.perform (\_ -> MismatchTimeout newGame.turn)
+
+                                _ ->
+                                    Cmd.none
+
+                        newMoves =
+                            case ( game.turn, newGame.turn ) of
+                                ( OneRevealed _, TwoRevealed _ _ ) ->
+                                    model.moves + 1
+
+                                ( OneRevealed _, Waiting ) ->
+                                    model.moves + 1
+
+                                _ ->
+                                    model.moves
+                    in
+                    ( { model | state = Playing newGame, moves = newMoves }, cmd )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        MismatchTimeout expectedTurn ->
+            case model.state of
+                Playing game ->
+                    if game.turn == expectedTurn then
+                        ( { model | state = Playing (Game.hideMismatch game) }, Cmd.none )
+
+                    else
+                        ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
 
         NewGameClicked ->
-            let
-                ( newGame, newSeed ) =
-                    Game.new model.seed
-            in
-            ( { game = newGame, seed = newSeed }, Cmd.none )
-
-        MismatchTimeout ->
-            ( model, Cmd.none )
+            ( { model | state = Loading, moves = 0 }
+            , Api.getCards model.selectedTheme model.equalPairs GotCards
+            )
 
 
 
 -- VISUALIZAÇÃO
 
 
-{-| HTML esperado (exemplo sem vitória):
--}
 view : Model -> Html Msg
 view model =
     main_
         [ class "table" ]
-        [ ol
-            [ class "board"
-            , attribute "aria-label" "Tabuleiro"
-            ]
-            (model.game.cards |> List.map (viewCard model.game.turn))
+        [ viewToolbar model
+        , case model.state of
+            Loading ->
+                p [ class "status" ] [ text "Carregando as cartas..." ]
+
+            Failed err ->
+                p [ class "status status--error" ] [ text (errorToString err) ]
+
+            Playing game ->
+                div []
+                    [ ol
+                        [ class "board"
+                        , attribute "aria-label" "Tabuleiro"
+                        ]
+                        (game.cards |> List.map (viewCard game.turn))
+                    , if Game.isWon game then
+                        viewVictory model.moves
+
+                      else
+                        text ""
+                    ]
         , viewNewGameButton
+        ]
+
+
+viewToolbar : Model -> Html Msg
+viewToolbar model =
+    div
+        [ class "toolbar" ]
+        [ label []
+            [ text "Tema "
+            , select [ onInput ThemeSelected ]
+                (model.themes
+                    |> List.map
+                        (\t ->
+                            option
+                                [ value t.id
+                                , selected (t.id == model.selectedTheme)
+                                ]
+                                [ text t.name ]
+                        )
+                )
+            ]
+        , label []
+            [ input
+                [ type_ "checkbox"
+                , checked model.equalPairs
+                , onCheck EqualPairsToggled
+                ]
+                []
+            , text " Pares iguais"
+            ]
         ]
 
 
@@ -125,7 +260,11 @@ viewCard turn card =
         cardClasses =
             case card.face of
                 Up ->
-                    "card card--up"
+                    if isMissed turn card then
+                        "card card--up card--miss"
+
+                    else
+                        "card card--up"
 
                 Down ->
                     "card"
@@ -153,8 +292,8 @@ viewCard turn card =
                     ]
                     [ img
                         [ class "card__image"
-                        , src (cardUrl card)
-                        , alt ""
+                        , src card.url
+                        , alt card.description
                         ]
                         []
                     ]
@@ -163,18 +302,18 @@ viewCard turn card =
         ]
 
 
-cardUrl : Card -> String
-cardUrl card =
-    "cards/animals/" ++ (card.group |> String.fromChar) ++ (card.index |> String.fromInt) ++ ".webp"
-
-
 isMissed : Turn -> Card -> Bool
 isMissed turn card =
-    False
+    case turn of
+        TwoRevealed ( _, idA ) ( _, idB ) ->
+            card.id == idA || card.id == idB
+
+        _ ->
+            False
 
 
-viewVictory : Game -> Html Msg
-viewVictory game =
+viewVictory : Int -> Html Msg
+viewVictory moves =
     div
         [ class "overlay" ]
         [ node "dialog"
@@ -190,17 +329,35 @@ viewVictory game =
             , p
                 [ class "victory__text"
                 ]
-                [ text "8 jogadas" ]
+                [ text (String.fromInt moves ++ " jogadas") ]
             , button
                 [ class "button button--primary"
                 , type_ "button"
                 , autofocus True
+                , onClick NewGameClicked
                 ]
                 [ text "Jogar de novo" ]
             ]
         ]
 
 
-todo : Html msg
-todo =
-    div [] [ text "TODO" ]
+errorToString : Http.Error -> String
+errorToString err =
+    case err of
+        Http.BadUrl url ->
+            "URL inválida: " ++ url
+
+        Http.Timeout ->
+            "O servidor demorou demais para responder."
+
+        Http.NetworkError ->
+            "Erro de conexão com o servidor."
+
+        Http.BadStatus 404 ->
+            "Tema não encontrado (404)."
+
+        Http.BadStatus status ->
+            "Erro no servidor: status " ++ String.fromInt status
+
+        Http.BadBody message ->
+            "Resposta inesperada do servidor: " ++ message

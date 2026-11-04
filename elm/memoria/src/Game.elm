@@ -3,16 +3,11 @@ module Game exposing (..)
 {-| As regras do jogo da memória, sem nenhuma parte visual.
 
 Tudo aqui é função pura: recebe um jogo e devolve outro. Isso permite
-testar as regras sem abrir o navegador (veja `tests/GameTest.elm`).
-
-Cada carta pertence a um grupo (`'a'` a `'h'`) e é o membro 1 ou 2 dele.
-No tema dos animais, o grupo é a espécie e o membro é o macho ou a fêmea.
-A regra que diferencia este jogo do tradicional fica em `isPair`: duas
-cartas formam par quando são do mesmo grupo e membros diferentes, e não
-quando são iguais.
+testar as regras sem abrir o navegador.
 
 -}
 
+import Api exposing (CardInfo)
 import Rng exposing (Seed)
 
 
@@ -22,13 +17,13 @@ type alias Game =
     }
 
 
-{-| Assets de cada carta são identificados por um par (letra, numero), como
-"a1", "b2", etc
+{-| Representação de uma carta no tabuleiro.
 -}
 type alias Card =
     { id : CardId
     , group : Char
-    , index : Int
+    , description : String
+    , url : String
     , face : Face
     }
 
@@ -58,18 +53,17 @@ type Turn
 {-| Embaralha as cartas e começa um jogo. Devolve também a semente seguinte,
 para a próxima partida sair diferente.
 -}
-new : Seed -> ( Game, Seed )
-new seed =
+new : Seed -> List CardInfo -> ( Game, Seed )
+new seed infos =
     let
         ( cards, newSeed ) =
-            [ 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h' ]
-                |> List.map (\chr -> [ { group = chr, index = 1 }, { group = chr, index = 2 } ])
-                |> List.concat
+            infos
                 |> List.indexedMap
-                    (\id { group, index } ->
+                    (\id info ->
                         { id = id
-                        , group = group
-                        , index = index
+                        , group = info.group
+                        , description = info.description
+                        , url = info.url
                         , face = Down
                         }
                     )
@@ -141,14 +135,21 @@ runIf cond fn =
 -}
 hideMismatch : Game -> Game
 hideMismatch game =
-    Debug.todo "hideMismatch"
+    case game.turn of
+        TwoRevealed ( _, idA ) ( _, idB ) ->
+            { cards = game.cards |> setFace Down [ idA, idB ]
+            , turn = Waiting
+            }
+
+        _ ->
+            game
 
 
 {-| Indica se todas as cartas já formam pares.
 -}
 isWon : Game -> Bool
 isWon game =
-    Debug.todo "isWon"
+    List.all (\c -> c.face == Permanent) game.cards
 
 
 {-| Procura uma carta pelo identificador.
