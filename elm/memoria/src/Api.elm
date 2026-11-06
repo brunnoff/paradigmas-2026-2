@@ -1,6 +1,6 @@
-module Api exposing (CardInfo, Theme, cardDecoder, charDecoder, getCards, getThemes, themeDecoder)
+module Api exposing (CardInfo, Theme, getCards, getThemes)
 
-{-| Tipos, decoders e requisições da API do jogo da memória.
+{-| Comunicação com a API do jogo da memória (veja `server/main.py`).
 -}
 
 import Http
@@ -8,16 +8,16 @@ import Json.Decode as D exposing (Decoder)
 import Url.Builder
 
 
-{-| Informações de um tema disponível na API.
--}
+
+-- TEMAS
+
+
 type alias Theme =
     { id : String
     , name : String
     }
 
 
-{-| Decodifica um tema da lista retornada por /api/themes.
--}
 themeDecoder : Decoder Theme
 themeDecoder =
     D.map2 Theme
@@ -25,14 +25,16 @@ themeDecoder =
         (D.field "name" D.string)
 
 
-{-| Busca a lista de temas disponíveis na API.
--}
 getThemes : (Result Http.Error (List Theme) -> msg) -> Cmd msg
 getThemes toMsg =
     Http.get
-        { url = Url.Builder.absolute [ "api", "themes" ] []
+        { url = "/api/themes"
         , expect = Http.expectJson toMsg (D.list themeDecoder)
         }
+
+
+
+-- CARTAS
 
 
 {-| Uma carta como vem da API, antes de entrar no jogo.
@@ -44,8 +46,6 @@ type alias CardInfo =
     }
 
 
-{-| Decodifica o objeto JSON de uma carta individual.
--}
 cardDecoder : Decoder CardInfo
 cardDecoder =
     D.map3 CardInfo
@@ -54,7 +54,7 @@ cardDecoder =
         (D.field "url" D.string)
 
 
-{-| Decodifica uma string contendo exatamente um caractere como Char.
+{-| O JSON não tem caractere, só string. Aceita apenas strings com uma letra.
 -}
 charDecoder : Decoder Char
 charDecoder =
@@ -70,7 +70,8 @@ charDecoder =
             )
 
 
-{-| Faz a requisição HTTP GET para /api/cards com tema e paridade.
+{-| Pede as cartas de um tema. Monta a URL
+`/api/cards?theme=animals&equalPairs=false`.
 -}
 getCards : String -> Bool -> (Result Http.Error (List CardInfo) -> msg) -> Cmd msg
 getCards theme equalPairs toMsg =
@@ -85,8 +86,8 @@ getCards theme equalPairs toMsg =
 
 
 boolToString : Bool -> String
-boolToString bool =
-    if bool then
+boolToString b =
+    if b then
         "true"
 
     else

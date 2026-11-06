@@ -3,7 +3,13 @@ module Game exposing (..)
 {-| As regras do jogo da memória, sem nenhuma parte visual.
 
 Tudo aqui é função pura: recebe um jogo e devolve outro. Isso permite
-testar as regras sem abrir o navegador.
+testar as regras sem abrir o navegador (veja `tests/GameTest.elm`).
+
+Cada carta pertence a um grupo (`'a'` a `'h'`) e é o membro 1 ou 2 dele.
+No tema dos animais, o grupo é a espécie e o membro é o macho ou a fêmea.
+A regra que diferencia este jogo do tradicional fica em `isPair`: duas
+cartas formam par quando são do mesmo grupo e membros diferentes, e não
+quando são iguais.
 
 -}
 
@@ -14,10 +20,11 @@ import Rng exposing (Seed)
 type alias Game =
     { cards : List Card
     , turn : Turn
+    , flips : Int
     }
 
 
-{-| Representação de uma carta no tabuleiro.
+{-| Cada carta pertence a um grupo; a imagem e a descrição vêm da API.
 -}
 type alias Card =
     { id : CardId
@@ -50,8 +57,8 @@ type Turn
     | TwoRevealed CardData CardData
 
 
-{-| Embaralha as cartas e começa um jogo. Devolve também a semente seguinte,
-para a próxima partida sair diferente.
+{-| Embaralha as cartas recebidas e começa um jogo. Devolve também a
+semente seguinte, para a próxima partida sair diferente.
 -}
 new : Seed -> List CardInfo -> ( Game, Seed )
 new seed infos =
@@ -68,11 +75,8 @@ new seed infos =
                         }
                     )
                 |> Rng.shuffle seed
-
-        game =
-            { cards = cards, turn = Waiting }
     in
-    ( game, newSeed )
+    ( { cards = cards, turn = Waiting, flips = 0 }, newSeed )
 
 
 {-| Vira a carta com este `id`. Cartas que já formaram par são ignoradas.
@@ -92,6 +96,9 @@ reveal id game =
 
 
 {-| Processa a carta escolhida de acordo com o estado da jogada.
+
+Cada carta que vira para cima conta uma virada em `flips`.
+
 -}
 pick : Card -> Game -> Game
 pick card game =
@@ -99,6 +106,7 @@ pick card game =
         Waiting ->
             { cards = game.cards |> setFace Up [ card.id ]
             , turn = OneRevealed ( card.group, card.id )
+            , flips = game.flips + 1
             }
 
         OneRevealed ( group, id ) ->
@@ -108,16 +116,19 @@ pick card game =
             else if card.group == group then
                 { cards = game.cards |> setFace Permanent [ card.id, id ]
                 , turn = Waiting
+                , flips = game.flips + 1
                 }
 
             else
                 { cards = game.cards |> setFace Up [ card.id ]
                 , turn = TwoRevealed ( card.group, card.id ) ( group, id )
+                , flips = game.flips + 1
                 }
 
         TwoRevealed ( _, idA ) ( _, idB ) ->
-            { cards = game.cards |> setFace Down [ idA, idB ]
-            , turn = Waiting
+            { game
+                | cards = game.cards |> setFace Down [ idA, idB ]
+                , turn = Waiting
             }
                 |> runIf (card.id /= idA && card.id /= idB) (pick card)
 
@@ -137,8 +148,9 @@ hideMismatch : Game -> Game
 hideMismatch game =
     case game.turn of
         TwoRevealed ( _, idA ) ( _, idB ) ->
-            { cards = game.cards |> setFace Down [ idA, idB ]
-            , turn = Waiting
+            { game
+                | cards = game.cards |> setFace Down [ idA, idB ]
+                , turn = Waiting
             }
 
         _ ->
@@ -149,7 +161,7 @@ hideMismatch game =
 -}
 isWon : Game -> Bool
 isWon game =
-    List.all (\c -> c.face == Permanent) game.cards
+    List.all (\card -> card.face == Permanent) game.cards
 
 
 {-| Procura uma carta pelo identificador.
